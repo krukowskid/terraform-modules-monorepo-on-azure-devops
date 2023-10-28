@@ -1,0 +1,223 @@
+stages:
+- stage: detect
+  jobs:
+  - job: detect
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - pwsh: |
+        if ([System.Convert]::ToBoolean("$(isMaster)"))
+        {
+          $sha = $env:BUILD_SOURCEVERSION
+          $body = @"
+          {
+            "queries": [
+              {
+                "type": 1,
+                "items": [
+                  "$sha"
+                ]
+              }
+            ]
+          }
+        "@
+          $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
+          $url = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/PullRequestQuery?api-version=5.1"
+          $response = Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body $Body -ContentType application/json
+          $pullRequestId = $response.results."$sha".pullRequestId
+        }
+        else {
+          $pullRequestId = $env:SYSTEM_PULLREQUEST_PULLREQUESTID
+        }
+        
+        Write-Host "##vso[task.setvariable variable=pullRequestId]$pullRequestId"
+        Write-Host "##vso[task.setvariable variable=prId;isOutput=true]$pullRequestId"
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      displayName: Get PR number 🔗
+      name: get_pr_number
+
+    - pwsh: |
+        $url = "$($env:SYSTEM_TEAMFOUNDATIONSERVERURI)$env:SYSTEM_TEAMPROJECTID/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/pullRequests/$(pullRequestId)/labels?api-version=5.1-preview.1"
+
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers @{
+            Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN"
+        }
+        
+        $labels = $response.value.name `
+                    | Where-Object { 
+                        @("major","minor","patch","no-release","published") -contains $_
+                      }
+
+        if ($labels.count -eq 1) {
+          Write-Output "Release type: $labels"
+          Write-Host "##vso[task.setvariable variable=label]$labels"
+          Write-Host "##vso[task.setvariable variable=labelOutput;isOutput=true]$labels"
+        }
+        elseif ($labels.count -eq 0) {
+          Write-Error -Message "No release type labels found. (patch/minor/major/no-release)."
+        }
+        elseif ($labels.count -gt 1) {
+          Write-Error -Message "Too many release labels set on pull request: $labels"
+        }
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      displayName: Check labels 🏷️
+      name: check_labels
+
+    - pwsh: |
+        $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
+        $uri = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/commits/$($env:BUILD_SOURCEVERSION)/changes?api-version=5.1"  
+        $changes = Invoke-RestMethod -Method Get -Headers $headers -Uri $uri -Verbose
+        $modules = (($changes.changes.GetEnumerator().item | Where-Object { ($_.isFolder -eq $true) -and ($_.path -ne '/.pipelines') -and ($_.path -ne '/') }).path).trim('/')
+        $modules
+
+        $existingModules = (Get-ChildItem -Directory).Name | Where-Object { $_ -ne '/.pipelines' }
+
+        $changedModules = New-Object PSObject
+        $modules | ForEach{
+            Add-Member -InputObject $changedModules -NotePropertyName $_ -NotePropertyValue @{"module" = $_}
+
+          if ((git tag -l "$_/v*" -n1 | Where-Object {$_ -like "*PR #$(pullRequestId) -*"}).count -ne 0) {
+            Write-Error "Changes from this PR were already published for module: $_"
+          }
+        }
+        $changedModulesJson = $changedModules | ConvertTo-Json -Compress
+
+        $params = @{
+          'Uri'         = "$($env:SYSTEM_TEAMFOUNDATIONSERVERURI)$env:SYSTEM_TEAMPROJECTID/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/pullRequests/$(pullRequestId)/labels?api-version=5.1-preview.1"
+          'Headers'     = $headers
+          'Method'      = 'GET'
+          'ContentType' = 'application/json; charset=utf-8'
+        }
+        $moduleLabels = (Invoke-restmethod @params).value.name
+        $moduleLabels
+        $moduleLabels | Where-Object { ($existingModules -contains $_) -and ($modules -notcontains $_) } | ForEach-Object {
+          $params = @{
+            'Uri'         = "$($env:SYSTEM_TEAMFOUNDATIONSERVERURI)$env:SYSTEM_TEAMPROJECTID/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/pullRequests/$(pullRequestId)/labels/$($_)?api-version=5.1-preview.1"
+            'Headers'     = $headers
+            'Method'      = 'DELETE'
+            'ContentType' = 'application/json; charset=utf-8'
+          }
+          Invoke-RestMethod @params
+        }
+
+        $modules | Where-Object { $moduleLabels -notcontains $_ } | ForEach-Object {
+          $params = @{
+            'Uri'         = "$($env:SYSTEM_TEAMFOUNDATIONSERVERURI)$env:SYSTEM_TEAMPROJECTID/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/pullRequests/$(pullRequestId)/labels?api-version=5.1-preview.1"
+            'Headers'     = $headers
+            'Method'      = 'POST'
+            'ContentType' = 'application/json; charset=utf-8'
+            'Body'        = @{name = "$($_)"} | ConvertTo-Json -Compress 
+          }
+          Invoke-RestMethod @params
+        }
+
+        Write-Output "##vso[task.setvariable variable=changedModules;isOutput=true]$changedModulesJson"
+
+        $releases = @()
+        foreach ($module in $modules){
+          $tags = (git tag -l "$module/v*.*.*")
+
+          if ($tags) {
+            $versions = $tags.trim("$module/v")
+            $latest = [System.Version[]]$versions | Sort-Object -Descending | select -first 1
+          }
+          else {
+            $latest = New-Object System.Version(0, 0, 0)
+          }
+          switch ("$(label)") {
+            "major" {
+              $major = $latest.major + 1
+              $minor = 0
+              $patch = 0
+            }
+            "minor" {
+              $major = $latest.major
+              $minor = $latest.minor + 1
+              $patch = 0
+            }
+            "patch" {
+              $major = $latest.major
+              $minor = $latest.minor
+              $patch = $latest.build + 1
+            }
+          }
+          $new = New-Object System.Version($major, $minor, $patch)
+          $releases += New-Object PSObject –Property @{
+            module = $module;
+            previous = $latest;
+            new = "v$new"
+          }
+        }
+        $output = New-Object PSObject –Property @{
+                    sha = "$(git rev-parse HEAD)";
+                    releases = $releases
+                  } | ConvertTo-Json -Compress
+
+        Write-Output "##vso[task.setvariable variable=releases;isOutput=true]$output"
+        $plan = $releases | foreach {
+          "| $($_.module) | v$($_.previous) | **$($_.new)** |`n"
+        }
+        $prUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_git/$($env:BUILD_REPOSITORY_NAME)/pullrequest/$(pullRequestId)"
+
+        $prApiUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/pullrequests/$(pullRequestId)?api-version=5.1"
+        $prInfo = Invoke-RestMethod -Method Get -Headers $headers -Uri $prApiUrl
+        $prTitle = $prInfo.title
+
+        $changelogEntry = ((($($prInfo.description) -split ("#+ ?") | Where-Object {
+            $_ -like "Changelog*"
+        }) -split ('```'))[1]).Trim()
+        if(!$changelogEntry) {
+            Write-Error "Changelog section not found in PR description"
+        }
+        if($changelogEntry -like "TODO:*") {
+            Write-Error "Please update change log section in PR description"
+        }
+
+        Write-Output "##vso[task.setvariable variable=prTitle;isOutput=true]$prTitle"
+        Write-Output "##vso[task.setvariable variable=changelogEntry;isOutput=true]$changelogEntry"
+
+        $content = @"
+        # Release plan
+        | Directory | Previous version | New version |
+        |-----------|------------------|-------------|
+        $plan
+        <details><summary>Changelog preview: </summary>
+
+        * PR [#$(pullRequestId)]($($prUrl)) - $prTitle
+
+        ``````
+        $changelogEntry
+        ``````
+        </details>
+        "@
+
+        if (![System.Convert]::ToBoolean("$(isMaster)")) {
+          $body = @"
+          {
+              "comments": [
+                {
+                  "parentCommentId": 0,
+                  "content": "$content",
+                  "commentType": 1
+                }
+              ],
+              "status": 4
+            }
+        "@
+          $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
+          $url = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/pullRequests/$(pullRequestId)/threads?api-version=5.1"
+          ((Invoke-RestMethod -Uri $url -Method GET -Headers $headers -Body $Body -ContentType application/json).value.comments | where-object {$_.content -like "# Release plan*"})."_links".self.href | foreach-object {
+            if (![string]::IsNullOrEmpty($_)) {
+              Invoke-RestMethod -Uri "$($_)?api-version=5.1" -Method DELETE -Headers $headers -Body $Body -ContentType application/json
+            }
+          }
+          Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body $Body -ContentType application/json
+        }
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      condition: and(succeeded(), ne(variables['label'], 'no-release'))
+      displayName: Create release plan 🎯
+      name: plan

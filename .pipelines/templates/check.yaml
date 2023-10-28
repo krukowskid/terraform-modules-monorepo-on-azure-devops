@@ -1,0 +1,55 @@
+stages:
+- stage: check
+  dependsOn: detect
+  condition: and(succeeded(), ne(dependencies.detect.outputs['detect.check_labels.labelOutput'], 'no-release'), eq(variables.isMaster, false))
+  jobs:
+  - job: lint 🧹
+    strategy:
+      matrix: $[ stageDependencies.detect.detect.outputs['plan.changedModules'] ]
+    steps:
+    - checkout: self
+
+    - bash: |
+        curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+        tflint --init && \
+        tflint --chdir="./$(module)"
+      displayName: TFLint 🧹
+
+  - job: validate
+    strategy:
+      matrix: $[ stageDependencies.detect.detect.outputs['plan.changedModules'] ]
+    steps:
+    - checkout: self
+    
+    - pwsh: |
+        terraform -chdir="./$(module)" fmt -write=false -diff -check
+      displayName: terraform fmt 📄
+
+    - pwsh: |
+        terraform -chdir="./$(module)" init --backend=false
+        terraform validate
+      displayName: terraform validate ✅
+
+  - job: checkov
+    strategy:
+      matrix: $[ stageDependencies.detect.detect.outputs['plan.changedModules'] ]
+    steps:
+    - checkout: self
+    
+    - bash: |
+        docker pull bridgecrew/checkov
+        docker run --volume $(pwd):/$(module) bridgecrew/checkov --directory /$(module)
+      displayName: 'checkov 🔎'
+      workingDirectory: $(System.DefaultWorkingDirectory)/$(module)
+
+  - job: tfsec
+    strategy:
+      matrix: $[ stageDependencies.detect.detect.outputs['plan.changedModules'] ]
+    steps:
+    - checkout: self
+    
+    - bash: |
+        docker pull aquasec/tfsec
+        docker run --volume $(pwd):/$(module) aquasec/tfsec /$(module)
+      displayName: 'tfsec 🛡️'
+      workingDirectory: $(System.DefaultWorkingDirectory)/$(module)
