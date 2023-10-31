@@ -9,7 +9,6 @@ stages:
     - pwsh: |
         if ([System.Convert]::ToBoolean("$(isMaster)"))
         {
-          $sha = $env:BUILD_SOURCEVERSION
           $body = @"
           {
             "queries": [
@@ -22,9 +21,16 @@ stages:
             ]
           }
         "@
+          $sha = $env:BUILD_SOURCEVERSION
           $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
           $url = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/PullRequestQuery?api-version=5.1"
-          $response = Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body $Body -ContentType application/json
+          
+          $response = Invoke-RestMethod -Uri $url `
+                                        -Method POST `
+                                        -Headers $headers `
+                                        -Body $Body `
+                                        -ContentType application/json
+                                        
           $pullRequestId = $response.results."$sha".pullRequestId
         }
         else {
@@ -47,7 +53,11 @@ stages:
         
         $labels = $response.value.name `
                     | Where-Object { 
-                        @("major","minor","patch","no-release","published") -contains $_
+                        @("major",
+                          "minor",
+                          "patch",
+                          "no-release",
+                          "published") -contains $_
                       }
 
         if ($labels.count -eq 1) {
@@ -69,20 +79,34 @@ stages:
     - pwsh: |
         $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
         $uri = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/commits/$($env:BUILD_SOURCEVERSION)/changes?api-version=5.1"  
-        $changes = Invoke-RestMethod -Method Get -Headers $headers -Uri $uri -Verbose
-        $modules = (($changes.changes.GetEnumerator().item | Where-Object { ($_.isFolder -eq $true) -and ($_.path -ne '/.pipelines') -and ($_.path -ne '/') }).path).trim('/')
+        $changes = Invoke-RestMethod -Method Get `
+                                      -Headers $headers `
+                                      -Uri $uri
+                                      
+        $modules = (($changes.changes.GetEnumerator().item `
+                      | Where-Object { 
+                          ($_.isFolder -eq $true) `
+                          -and ($_.path -ne '/.pipelines') `
+                          -and ($_.path -ne '/')
+                        }).path).trim('/')
         $modules
 
-        $existingModules = (Get-ChildItem -Directory).Name | Where-Object { $_ -ne '/.pipelines' }
+        $existingModules = (Get-ChildItem -Directory).Name `
+                              | Where-Object { 
+                                  $_ -ne '/.pipelines' 
+                                }
 
         $changedModules = New-Object PSObject
-        $modules | ForEach{
-            Add-Member -InputObject $changedModules -NotePropertyName $_ -NotePropertyValue @{"module" = $_}
+        $modules | ForEach {
+                    Add-Member -InputObject $changedModules `
+                                -NotePropertyName $_ `
+                                -NotePropertyValue @{"module" = $_}
 
           if ((git tag -l "$_/v*" -n1 | Where-Object {$_ -like "*PR #$(pullRequestId) -*"}).count -ne 0) {
             Write-Error "Changes from this PR were already published for module: $_"
           }
         }
+        
         $changedModulesJson = $changedModules | ConvertTo-Json -Compress
 
         $params = @{
@@ -92,7 +116,7 @@ stages:
           'ContentType' = 'application/json; charset=utf-8'
         }
         $moduleLabels = (Invoke-restmethod @params).value.name
-        $moduleLabels
+
         $moduleLabels | Where-Object { ($existingModules -contains $_) -and ($modules -notcontains $_) } | ForEach-Object {
           $params = @{
             'Uri'         = "$($env:SYSTEM_TEAMFOUNDATIONSERVERURI)$env:SYSTEM_TEAMPROJECTID/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/pullRequests/$(pullRequestId)/labels/$($_)?api-version=5.1-preview.1"
@@ -163,7 +187,9 @@ stages:
         $prUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_git/$($env:BUILD_REPOSITORY_NAME)/pullrequest/$(pullRequestId)"
 
         $prApiUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/pullrequests/$(pullRequestId)?api-version=5.1"
-        $prInfo = Invoke-RestMethod -Method Get -Headers $headers -Uri $prApiUrl
+        $prInfo = Invoke-RestMethod -Method Get `
+                                    -Headers $headers `
+                                    -Uri $prApiUrl
         $prTitle = $prInfo.title
 
         $changelogEntry = ((($($prInfo.description) -split ("#+ ?") | Where-Object {
@@ -209,12 +235,27 @@ stages:
         "@
           $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
           $url = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/pullRequests/$(pullRequestId)/threads?api-version=5.1"
-          ((Invoke-RestMethod -Uri $url -Method GET -Headers $headers -Body $Body -ContentType application/json).value.comments | where-object {$_.content -like "# Release plan*"})."_links".self.href | foreach-object {
-            if (![string]::IsNullOrEmpty($_)) {
-              Invoke-RestMethod -Uri "$($_)?api-version=5.1" -Method DELETE -Headers $headers -Body $Body -ContentType application/json
-            }
+          ((Invoke-RestMethod -Uri $url `
+                              -Method GET `
+                              -Headers $headers `
+                              -Body $Body `
+                              -ContentType application/json).value.comments `
+                                | where-object {
+                                    $_.content -like "# Release plan*"
+                                  })."_links".self.href | foreach-object {
+                                        if (![string]::IsNullOrEmpty($_)) {
+                                          Invoke-RestMethod -Uri "$($_)?api-version=5.1" `
+                                                            -Method DELETE `
+                                                            -Headers $headers `
+                                                            -Body $Body `
+                                                            -ContentType application/json
+                                        }
           }
-          Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body $Body -ContentType application/json
+          Invoke-RestMethod -Uri $url `
+                            -Method POST `
+                            -Headers $headers `
+                            -Body $Body `
+                            -ContentType application/json
         }
       env:
         SYSTEM_ACCESSTOKEN: $(System.AccessToken)
