@@ -126,11 +126,11 @@ stages:
       displayName: Generate docs ✍
 
     - pwsh: |
-        $rootPageName = "$($env:BUILD_REPOSITORY_NAME)"
+        $rootPageName = "$($env:BUILD_REPOSITORY_NAME)".Replace(' ','-')
 
         $version = (('$(releases)' | convertfrom-json).releases | where-object {$_.module -eq "$(module)"}).new
         $docs = get-content -raw "$(module)/output/documentation.md" | Out-String 
-        $wikiName = ('{0}.wiki' -f $($env:SYSTEM_TEAMPROJECT))
+        $wikiName = ('{0}.wiki' -f $($env:SYSTEM_TEAMPROJECT).Replace(' ','-'))
         $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
 
         try {
@@ -161,7 +161,7 @@ stages:
             }
         }
 
-        $prUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_git/$($env:BUILD_REPOSITORY_NAME)/pullrequest/$(pullRequestId)"
+        $prUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$([uri]::EscapeDataString("$env:SYSTEM_TEAMPROJECT/_git/$($env:BUILD_REPOSITORY_NAME)/pullrequest/$(pullRequestId)"))"
 
         $date = Get-Date -Format dd-MM-yyyy
         
