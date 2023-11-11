@@ -1,13 +1,13 @@
 trigger:
   branches:
     include:
-    - master
+    - main
 
 pool:
   vmImage: ubuntu-latest
 
 variables:
-  isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+  isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
 
 stages:
 - template: templates/detect.yaml
