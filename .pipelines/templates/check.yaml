@@ -3,7 +3,7 @@ stages:
   dependsOn: detect
   condition: and(succeeded(), ne(dependencies.detect.outputs['detect.check_labels.labelOutput'], 'no-release'), eq(variables.isMaster, false))
   jobs:
-  - job: lint 🧹
+  - job: lint
     strategy:
       matrix: $[ stageDependencies.detect.detect.outputs['plan.changedModules'] ]
     steps:
