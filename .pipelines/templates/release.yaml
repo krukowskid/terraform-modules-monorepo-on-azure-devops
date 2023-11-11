@@ -180,7 +180,10 @@ stages:
           $existingChangelog = ($content -split ("<!-- CHANGELOG -->"))[1]
 
           if ($existingChangelog -like "*## $version*") {
-            Write-Error "Changelog for version $version already exists."
+            $errorMessage = "Changelog for version $version already exists."
+            Write-Error $errorMessage
+            Write-Host "##vso[task.logissue type=error]$errorMessage"
+            Write-Host "##vso[task.complete result=Failed;]$errorMessage"
           }
 
           $changelog = @"

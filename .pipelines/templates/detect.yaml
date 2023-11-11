@@ -59,17 +59,22 @@ stages:
                           "no-release",
                           "published") -contains $_
                       }
-
-        if ($labels.count -eq 1) {
-          Write-Output "Release type: $labels"
-          Write-Host "##vso[task.setvariable variable=label]$labels"
-          Write-Host "##vso[task.setvariable variable=labelOutput;isOutput=true]$labels"
+        try {
+          if ($labels.count -eq 1) {
+            Write-Output "Release type: $labels"
+            Write-Host "##vso[task.setvariable variable=label]$labels"
+            Write-Host "##vso[task.setvariable variable=labelOutput;isOutput=true]$labels"
+          }
+          elseif ($labels.count -eq 0) {
+            Write-Error -Message "No release type labels found. (patch/minor/major/no-release)."
+          }
+          elseif ($labels.count -gt 1) {
+            Write-Error -Message "Too many release labels set on pull request: $labels"
+          }
         }
-        elseif ($labels.count -eq 0) {
-          Write-Error -Message "No release type labels found. (patch/minor/major/no-release)."
-        }
-        elseif ($labels.count -gt 1) {
-          Write-Error -Message "Too many release labels set on pull request: $labels"
+        catch {
+          Write-Host "##vso[task.logissue type=error]$_"
+          Write-Host "##vso[task.complete result=Failed;]$_"
         }
       env:
         SYSTEM_ACCESSTOKEN: $(System.AccessToken)
@@ -82,11 +87,11 @@ stages:
         $changes = Invoke-RestMethod -Method Get `
                                       -Headers $headers `
                                       -Uri $uri
-                                      
+          
         $modules = (($changes.changes.GetEnumerator().item `
                       | Where-Object { 
                           ($_.isFolder -eq $true) `
-                          -and ($_.path -ne '/.pipelines') `
+                          -and ($_.path -notlike '/.pipelines*') `
                           -and ($_.path -ne '/')
                         }).path).trim('/')
         $modules
@@ -103,7 +108,10 @@ stages:
                                 -NotePropertyValue @{"module" = $_}
 
           if ((git tag -l "$_/v*" -n1 | Where-Object {$_ -like "*PR #$(pullRequestId) -*"}).count -ne 0) {
-            Write-Error "Changes from this PR were already published for module: $_"
+            $errorMessage = "Changes from this PR were already published for module: $_"
+            Write-Error $errorMessage
+            Write-Host "##vso[task.logissue type=error]$errorMessage"
+            Write-Host "##vso[task.complete result=Failed;]$errorMessage"
           }
         }
         
@@ -141,7 +149,7 @@ stages:
         Write-Output "##vso[task.setvariable variable=changedModules;isOutput=true]$changedModulesJson"
 
         $releases = @()
-        foreach ($module in $modules){
+        foreach ($module in $modules) {
           $tags = (git tag -l "$module/v*.*.*")
 
           if ($tags) {
@@ -195,11 +203,18 @@ stages:
         $changelogEntry = ((($($prInfo.description) -split ("#+ ?") | Where-Object {
             $_ -like "Changelog*"
         }) -split ('```'))[1]).Trim()
-        if(!$changelogEntry) {
-            Write-Error "Changelog section not found in PR description"
+        
+        try {
+          if(!$changelogEntry) {
+              Write-Error "Changelog section not found in PR description"
+          }
+          if($changelogEntry -like "TODO:*") {
+              Write-Error "Please update change log section in PR description"
+          }
         }
-        if($changelogEntry -like "TODO:*") {
-            Write-Error "Please update change log section in PR description"
+        catch {
+          Write-Host "##vso[task.logissue type=error]$_"
+          Write-Host "##vso[task.complete result=Failed;]$_"
         }
 
         Write-Output "##vso[task.setvariable variable=prTitle;isOutput=true]$prTitle"
