@@ -9,6 +9,7 @@ stages:
     - pwsh: |
         if ([System.Convert]::ToBoolean("$(isMaster)"))
         {
+          $sha = $env:BUILD_SOURCEVERSION
           $body = @"
           {
             "queries": [
@@ -21,7 +22,6 @@ stages:
             ]
           }
         "@
-          $sha = $env:BUILD_SOURCEVERSION
           $headers = @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" }
           $url = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/repositories/$($env:BUILD_REPOSITORY_NAME)/PullRequestQuery?api-version=5.1"
           
@@ -56,8 +56,7 @@ stages:
                         @("major",
                           "minor",
                           "patch",
-                          "no-release",
-                          "published") -contains $_
+                          "no-release") -contains $_
                       }
         try {
           if ($labels.count -eq 1) {
@@ -192,7 +191,7 @@ stages:
         $plan = $releases | foreach {
           "| $($_.module) | v$($_.previous) | **$($_.new)** |`n"
         }
-        $prUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_git/$($env:BUILD_REPOSITORY_NAME)/pullrequest/$(pullRequestId)"
+        $prUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$([uri]::EscapeDataString("$env:SYSTEM_TEAMPROJECT/_git/$($env:BUILD_REPOSITORY_NAME)/pullrequest/$(pullRequestId)"))"
 
         $prApiUrl = "$env:SYSTEM_TEAMFOUNDATIONSERVERURI$env:SYSTEM_TEAMPROJECT/_apis/git/pullrequests/$(pullRequestId)?api-version=5.1"
         $prInfo = Invoke-RestMethod -Method Get `
