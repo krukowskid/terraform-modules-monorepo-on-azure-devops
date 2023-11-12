@@ -1,2 +1,5 @@
 # Terraform Modules monorepo on Azure DevOps
-Reusable Terraform modules that you can include in your infrastructure template! 🎉
+Working Terraform monorepo example fully based on Azure DevOps. :tada:
+Pipelines are setup to execute following steps: tfsec, tflint, checkov and terraform validate, enabling early issue detection and shift left approach.
+
+For a detailed walkthrough, dive into blog article: [GitHub-Powered Terraform Modules Monorepo.](https://cloudchronicles.blog/blog/Azure-DevOps-Terraform-Modules-Monorepo/)
